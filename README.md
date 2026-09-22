@@ -1,0 +1,2 @@
+# data_analysis_sufe
+基于sufe_stats课程要求的数据分析skill，辅助ai一键生成数据份报告
