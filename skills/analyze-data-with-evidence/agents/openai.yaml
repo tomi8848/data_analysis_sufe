@@ -1,0 +1,13 @@
+interface:
+  display_name: 问题驱动的数据分析
+  short_description: 依据课件原则定义问题、核验数据与证据，形成可复现分析和可评估行动
+  default_prompt: 请使用 $analyze-data-with-evidence 分析我提供的数据，先明确问题和指标口径，再核验数据、选择方法，并给出有证据边界的结论与行动建议。
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

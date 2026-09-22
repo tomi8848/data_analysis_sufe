@@ -1,0 +1,5 @@
+period,customer_group,orders,amount_per_order_yuan
+previous,new,20,80
+previous,returning,80,200
+current,new,60,80
+current,returning,90,200

@@ -1,0 +1,10 @@
+{
+  "package_name": "analyze-data-with-evidence",
+  "version": "1.0.0",
+  "language": "zh-CN",
+  "skill_path": "skills/analyze-data-with-evidence",
+  "archive_format": "flat-repository-root",
+  "import_archive": "skill-repository.zip",
+  "skill_content": "unchanged-export",
+  "source": "User-provided course materials; see references/course-principles.md"
+}
