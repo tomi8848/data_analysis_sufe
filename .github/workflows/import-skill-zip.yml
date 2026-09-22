@@ -1,0 +1,159 @@
+# Save this file as .github/workflows/import-skill-zip.yml in your repository.
+name: Import skill ZIP
+
+'on':
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'skill-repository.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: import-skill-zip-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  import:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the upload commit
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+      - name: Validate and import the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_IMPORT'
+          import json
+          import os
+          import re
+          import stat
+          import tempfile
+          from pathlib import Path, PurePosixPath
+          from zipfile import ZipFile, ZIP_STORED, ZIP_DEFLATED
+
+          ALLOWED = ('PACKAGE.json', 'README.md', 'docs/INSTALL.md', 'docs/MAINTENANCE.md', 'docs/WEB_UPLOAD.md', 'examples/README.md', 'examples/customer_mix.csv', 'skills/analyze-data-with-evidence/SKILL.md', 'skills/analyze-data-with-evidence/agents/openai.yaml', 'skills/analyze-data-with-evidence/assets/icon.svg', 'skills/analyze-data-with-evidence/references/course-principles.md', 'skills/analyze-data-with-evidence/references/execution-checks.md', 'skills/analyze-data-with-evidence/references/work-templates.md')
+          MAX_BYTES = 5 * 1024 * 1024
+
+
+          def import_package(root, archive):
+              root = Path(root).resolve()
+              archive = Path(archive)
+              if archive.is_symlink() or not archive.is_file():
+                  raise ValueError("Upload skill-repository.zip to the repository root first.")
+              if archive.stat().st_size > MAX_BYTES:
+                  raise ValueError("Archive exceeds the 5 MiB package limit.")
+              records = {}
+              seen = set()
+              with ZipFile(archive) as z:
+                  infos = z.infolist()
+                  if len(infos) > 80 or sum(i.file_size for i in infos) > MAX_BYTES:
+                      raise ValueError("Archive has too many entries or expands beyond 5 MiB.")
+                  for info in infos:
+                      name = info.filename
+                      path = PurePosixPath(name)
+                      if (not name or '\\' in name or ':' in name or path.is_absolute()
+                              or any(c in ('', '.', '..') for c in name.rstrip('/').split('/'))
+                              or any(ord(c) < 32 for c in name)):
+                          raise ValueError("Unsafe archive path: " + repr(name))
+                      key = name.rstrip('/').casefold()
+                      if key in seen:
+                          raise ValueError("Duplicate archive path: " + name)
+                      seen.add(key)
+                      mode = (info.external_attr >> 16) & 0xFFFF
+                      kind = stat.S_IFMT(mode)
+                      if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
+                          raise ValueError("Only regular files and directories are accepted.")
+                      if info.flag_bits & 1 or info.compress_type not in (ZIP_STORED, ZIP_DEFLATED):
+                          raise ValueError("Unsupported or encrypted ZIP entry.")
+                      if info.is_dir():
+                          if not any(p.startswith(name) for p in ALLOWED):
+                              raise ValueError("Unexpected directory: " + name)
+                          continue
+                      if kind == stat.S_IFDIR or name not in ALLOWED:
+                          raise ValueError("Unexpected file. Upload skill-repository.zip, not the outer kit: " + name)
+                      raw = z.read(info)  # also verifies CRC
+                      raw.decode('utf-8')
+                      records[name] = raw
+              if set(records) != set(ALLOWED):
+                  raise ValueError("Required files missing: " + ', '.join(sorted(set(ALLOWED) - set(records))))
+              meta = json.loads(records['PACKAGE.json'])
+              if meta.get('package_name') != 'analyze-data-with-evidence' or meta.get('archive_format') != 'flat-repository-root':
+                  raise ValueError("Incorrect PACKAGE.json.")
+              skill = records['skills/analyze-data-with-evidence/SKILL.md'].decode('utf-8')
+              match = re.match(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)', skill, re.S)
+              if not match or not re.search(r'^name: analyze-data-with-evidence$', match[1], re.M) or not re.search(r'^description: .+', match[1], re.M):
+                  raise ValueError("Invalid skill name or required metadata.")
+              for name, raw in records.items():
+                  if not name.endswith('.md'):
+                      continue
+                  for target in re.findall(r'\[[^\]]*\]\(([^)]+)\)', raw.decode('utf-8')):
+                      if '://' in target or target.startswith('#'):
+                          continue
+                      target = target.split('#', 1)[0]
+                      dest = (root / PurePosixPath(name).parent / target).resolve()
+                      if not dest.is_relative_to(root):
+                          raise ValueError("Reference leaves the repository: " + name)
+                      relative = dest.relative_to(root).as_posix()
+                      if relative not in records and not any(p.startswith(relative.rstrip('/') + '/') for p in records):
+                          raise ValueError("Missing reference: " + name + ' -> ' + target)
+              # Check every destination before changing any file.
+              for name in records:
+                  dest = root / name
+                  for part in [dest] + list(dest.parents):
+                      if part == root:
+                          break
+                      if part.is_symlink():
+                          raise ValueError("Refusing to write through a symlink: " + name)
+                  if dest.exists() and not dest.is_file():
+                      raise ValueError("Destination is not a regular file: " + name)
+                  for parent in dest.parents:
+                      if parent == root:
+                          break
+                      if parent.exists() and not parent.is_dir():
+                          raise ValueError("Destination parent is not a directory: " + name)
+              for name, raw in sorted(records.items()):
+                  dest = root / name
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as out:
+                      temp = Path(out.name)
+                      out.write(raw)
+                  try:
+                      temp.chmod(0o644)
+                      os.replace(temp, dest)
+                  finally:
+                      temp.unlink(missing_ok=True)
+              message = f"Imported {len(records)} validated package files. Other repository files were preserved."
+              print(message)
+              if os.environ.get('GITHUB_STEP_SUMMARY'):
+                  with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+                      out.write('## Skill package imported\n\n' + message + '\n')
+              return len(records)
+
+
+          if __name__ == '__main__':
+              import_package(Path.cwd(), Path('skill-repository.zip'))
+          PY_IMPORT
+      - name: Commit imported files to the upload branch
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git add -- README.md PACKAGE.json docs examples skills/analyze-data-with-evidence
+          if git diff --cached --quiet; then
+            echo "Package files are already current; no extra commit is needed."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Import data analysis skill package'
+          git push origin "HEAD:$TARGET_BRANCH"
